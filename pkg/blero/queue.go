@@ -5,6 +5,7 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 
@@ -163,6 +164,42 @@ func jIDString(jID uint64) string {
 	return fmt.Sprintf("%020d", jID)
 }
 
+// resetInProgress moves jobInProgress jobs to jobPending
+func (q *queue) resetInProgress() error {
+	defer q.dbL.Unlock()
+	q.dbL.Lock()
+
+	err := q.db.Update(func(txn *badger.Txn) error {
+		prefix := []byte(getQueueKeyPrefix(jobInProgress))
+		k, vs, err := getAllKVsForPrefix(txn, prefix)
+		if err != nil {
+			return err
+		}
+		// iteration is done, no job was found
+		if k == nil {
+			return nil
+		}
+
+		for _, v := range vs {
+
+			j, err := decodeJob(v)
+			if err != nil {
+				return err
+			}
+			log.Println("reset")
+			log.Println(j.Name)
+
+			// Move from from Pending queue to InProgress queue
+			err = moveItem(txn, k, []byte(getJobKey(jobPending, j.ID)), v)
+		}
+
+		return err
+	})
+	log.Println("reset in progress jobs to pending complete")
+
+	return err
+}
+
 // dequeueJob moves the next pending job from the pending status to inprogress
 func (q *queue) dequeueJob() (*Job, error) {
 	var j *Job
@@ -214,6 +251,45 @@ func getFirstKVForPrefix(txn *badger.Txn, prefix []byte) ([]byte, []byte, error)
 
 	v, err := item.ValueCopy(nil)
 	return k, v, err
+}
+
+func getAllKVsForPrefix(txn *badger.Txn, prefix []byte) ([]byte, [][]byte, error) {
+	itOpts := badger.DefaultIteratorOptions
+	itOpts.PrefetchValues = true
+	itOpts.PrefetchSize = 1
+	it := txn.NewIterator(itOpts)
+
+	// go to smallest key after prefix
+	it.Seek(prefix)
+	defer it.Close()
+	// iteration done, no item found
+	if !it.ValidForPrefix(prefix) {
+		return nil, nil, nil
+	}
+
+	var k []byte
+	var vs [][]byte = make([][]byte, 0)
+	var err error
+
+	for {
+		log.Println("...")
+		if !it.ValidForPrefix(prefix) || !it.Valid() {
+			break
+		}
+		item := it.Item()
+
+		k = item.KeyCopy(nil)
+
+		var v []byte
+		v, err = item.ValueCopy(nil)
+		if err != nil {
+			break
+		}
+		vs = append(vs, v)
+
+		it.Next()
+	}
+	return k, vs, err
 }
 
 // markJobDone moves a job from the inprogress status to complete/failed

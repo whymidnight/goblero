@@ -1,6 +1,9 @@
 package blero
 
-import "fmt"
+import (
+	"fmt"
+	"log"
+)
 
 // Blero struct
 type Blero struct {
@@ -19,10 +22,14 @@ func New(dbPath string) *Blero {
 
 // Start Blero
 func (bl *Blero) Start() error {
-	fmt.Println("Starting Blero ...")
+	log.Println("Starting Blero ...")
 	err := bl.queue.start()
 	if err != nil {
 		return err
+	}
+	err = bl.queue.resetInProgress()
+	if err != nil {
+		panic(err)
 	}
 	bl.dispatcher.startLoop(bl.queue)
 	return nil
